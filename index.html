@@ -1,152 +1,186 @@
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Weekly Schedule (ID-safe loader)</title>
+<title>Weekly Schedule (aSc binary-days loader)</title>
 <style>
-  body{font-family:Arial,Helvetica,sans-serif;margin:20px}
-  h2{margin-top:0}
-  .controls{margin-bottom:1rem;display:flex;gap:.5rem;flex-wrap:wrap}
-  button{padding:.5rem .9rem;font-size:.9rem;cursor:pointer;border:1px solid #888;border-radius:4px;background:#fafafa}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  input[type=file]{display:none}
-  table{border-collapse:collapse;width:100%;min-width:640px}
-  th,td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}
-  th{background:#f0f0f0}
-  tr:nth-child(even){background:#fafafa}
-  small{display:block;color:#555;font-size:.8em}
-  hr{border:0;border-top:1px dotted #ccc;margin:.3em 0}
-  .table-wrapper{overflow-x:auto}
+ body{font-family:Arial,Helvetica,sans-serif;margin:20px}
+ h2{margin-top:0}
+ .controls{margin-bottom:1rem;display:flex;gap:.5rem;flex-wrap:wrap}
+ button{padding:.5rem .9rem;font-size:.9rem;cursor:pointer;border:1px solid #888;border-radius:4px;background:#fafafa}
+ button:disabled{opacity:.5;cursor:not-allowed}
+ input[type=file]{display:none}
+ table{border-collapse:collapse;width:100%;min-width:640px}
+ th,td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}
+ th{background:#f0f0f0}
+ tr:nth-child(even){background:#fafafa}
+ small{display:block;color:#555;font-size:.8em}
+ hr{border:0;border-top:1px dotted #ccc;margin:.3em 0}
+ .table-wrapper{overflow-x:auto}
 </style>
 </head><body>
 
 <h2>Weekly Schedule</h2>
 <div class="controls">
-  <input type="file" id="xmlFileInput" accept=".xml">
-  <button id="uploadBtn">Upload XML</button>
-  <button id="clearBtn" disabled>Clear Schedule</button>
+  <input type="file" id="xmlFile" accept=".xml">
+  <button id="btnUpload">Upload XML</button>
+  <button id="btnClear" disabled>Clear Schedule</button>
 </div>
 
-<div id="scheduleContainer" class="table-wrapper"></div>
+<div id="schedule" class="table-wrapper"></div>
 
 <script>
-/* --- DOM refs -------------------------------------------------------- */
-const xmlInput  = document.getElementById('xmlFileInput');
-const uploadBtn = document.getElementById('uploadBtn');
-const clearBtn  = document.getElementById('clearBtn');
-const wrap      = document.getElementById('scheduleContainer');
+/* ============ DOM refs ============ */
+const fileInput = document.getElementById('xmlFile');
+const btnUpload = document.getElementById('btnUpload');
+const btnClear  = document.getElementById('btnClear');
+const schedule  = document.getElementById('schedule');
 
-uploadBtn.addEventListener('click', () => xmlInput.click());
-xmlInput.addEventListener('change', handleFile);
-clearBtn.addEventListener('click', clearSchedule);
+btnUpload.onclick = () => fileInput.click();
+fileInput.onchange = handleFile;
+btnClear .onclick  = clearSchedule;
 
-/* --- file-to-HTML pipeline ------------------------------------------ */
-function handleFile(){
-  const f = xmlInput.files?.[0];
-  if(!f) return;
-  const r = new FileReader();
-  r.onload = e=>{
-    try{
-      const doc  = new DOMParser().parseFromString(e.target.result,'text/xml');
-      const data = extractScheduleData(doc);
+/* ============ file->table ============ */
+function handleFile () {
+  const file = fileInput.files?.[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const doc  = new DOMParser().parseFromString(e.target.result, 'text/xml');
+      const data = extractSchedule(doc);
       renderTable(data);
-      clearBtn.disabled = false;
-    }catch(err){
-      alert('Unable to parse timetable: '+err.message);
+      btnClear.disabled = false;
+    } catch (err) {
+      alert('Unable to parse timetable: ' + err.message);
     }
   };
-  r.readAsText(f);
+  reader.readAsText(file);
 }
 
-/* --------------------------------------------------------------------
-   Robust extractor: builds ID→index maps for both days & periods
--------------------------------------------------------------------- */
-function extractScheduleData(doc){
-  const tag = t => [...doc.getElementsByTagName(t), ...doc.getElementsByTagName(t.toUpperCase())];
+/* ------------------------------------------------------------------
+   Extractor for “binary-days + numeric-period” aSc XML
+------------------------------------------------------------------ */
+function extractSchedule (doc) {
 
-  /* ---- DAYS catalogue ---- */
-  const dayNodes = tag('day').filter(n =>
-      /day/.test(n.parentElement?.tagName.toLowerCase()) && n.hasAttribute('id'));
-  const dayIds   = dayNodes.map(n => +n.getAttribute('id'));
-  const days     = dayNodes.map(n =>
-        n.getAttribute('long')  || n.getAttribute('name') ||
-        n.getAttribute('short') || ('Day '+n.getAttribute('id')));
-  const dayIdx   = Object.fromEntries(dayIds.map((id,i)=>[id,i]));
-
-  /* fallback if catalogue missing */
-  if(!days.length){
-      const idsFromCards = [...new Set(tag('card').map(c=>+c.querySelector('dayid,day,Day')?.textContent))]
-                           .filter(Number.isFinite)
-                           .sort((a,b)=>a-b);
-      idsFromCards.forEach((id,i)=>{ dayIdx[id]=i; days.push('Day '+(i+1)); });
-  }
-
-  /* ---- PERIODS catalogue ---- */
-  const perNodes = tag('period').filter(n =>
-        /period/.test(n.parentElement?.tagName.toLowerCase()) && n.hasAttribute('id'));
-  const perIds   = perNodes.map(n => +n.getAttribute('id'));
-  const periods  = perNodes.map(n => ({
-        start: n.getAttribute('starttime') || n.getAttribute('start') ||
-               n.querySelector('starttime,start')?.textContent || '',
-        end  : n.getAttribute('endtime')   || n.getAttribute('end')   ||
-               n.querySelector('endtime,end')?.textContent   || ''
-  }));
-  const perIdx   = Object.fromEntries(perIds.map((id,i)=>[id,i]));
-
-  if(!periods.length) throw new Error('No <period> catalogue found');
-
-  /* ---- Empty table scaffold -------------------------------------- */
-  const table = Array.from({length:periods.length},
-                ()=>Array.from({length:days.length},()=>[]));
-
-  /* ---- Fill from <cards> ----------------------------------------- */
-  tag('card').forEach(card=>{
-      const dId = +card.querySelector('dayid,day,Day')?.textContent;
-      const pId = +card.querySelector('period,Period')?.textContent;
-      const row = perIdx[pId];       // look up row & col safely
-      const col = dayIdx[dId];
-      if(row===undefined || col===undefined) return;  // skip odd references
-
-      const subj = (card.querySelector('subject,subj,Subject')||{}).textContent?.trim() || '—';
-      const tch  = (card.querySelector('teacher,teacher1,staff,Teacher')||{}).textContent?.trim() || '';
-      table[row][col].push({subject:subj,teacher:tch});
+  /* ---------- subjects & teachers dictionaries ---------- */
+  const subjNameById = {};
+  doc.querySelectorAll('subject').forEach(s =>{
+     subjNameById[s.getAttribute('id')] =
+          s.getAttribute('short') || s.getAttribute('name') || '—';
   });
 
-  return {days,periods,table};
-}
+  const teacherNameById = {};
+  doc.querySelectorAll('teacher').forEach(t =>{
+     teacherNameById[t.getAttribute('id')] =
+        t.getAttribute('short') || t.getAttribute('name') || '';
+  });
 
-/* --------------------------------------------------------------------
-   Render <table>
--------------------------------------------------------------------- */
-function renderTable({days,periods,table}){
-  wrap.innerHTML='';
-  const tbl = document.createElement('table');
+  /* ---------- lessons:  id -> {subjectid, teacherIds[]} ---------- */
+  const lessonInfo = {};
+  doc.querySelectorAll('lesson').forEach(l =>{
+     lessonInfo[l.getAttribute('id')] = {
+        subject : l.getAttribute('subjectid'),
+        teachers: (l.getAttribute('teacherids') || '').split(',').filter(Boolean)
+     };
+  });
 
-  /* header */
-  const thead = tbl.createTHead(), hrow = thead.insertRow();
-  hrow.insertCell().outerHTML='<th>Time</th>';
-  days.forEach(d => hrow.insertCell().outerHTML=`<th>${d}</th>`);
+  /* ---------- periods catalogue & map ---------- */
+  const periodElems = [...doc.querySelectorAll('periods > period')];
+  if (!periodElems.length) throw new Error('No <period> catalogue found');
 
-  /* body */
-  const tbody = tbl.createTBody();
-  periods.forEach((per,r)=>{
-      const tr = tbody.insertRow();
-      tr.insertCell().innerHTML = `${per.start}&nbsp;–&nbsp;${per.end}`;
-      days.forEach((_,c)=>{
-          const cell = tr.insertCell();
-          const slot = table[r][c];
-          if(slot.length){
-              cell.innerHTML = slot.map(s=>`${s.subject}<br><small>${s.teacher}</small>`).join('<hr>');
+  const periodIdx = {};                         // periodNumber → rowIndex
+  const periods   = periodElems.map((p, i) =>{
+      const num = +p.getAttribute('period') || i;
+      periodIdx[num] = i;
+      return {
+        start : p.getAttribute('starttime') || '',
+        end   : p.getAttribute('endtime')   || ''
+      };
+  });
+
+  /* ---------- day names & map ---------- */
+  const dayNames = [];
+  const dayIdx   = {};                          // bitPosition → columnIndex
+  // read every <daysdef days="10000" name="Monday" …/>
+  doc.querySelectorAll('daysdef').forEach(d =>{
+      const mask = d.getAttribute('days') || '';
+      const name = d.getAttribute('short') || d.getAttribute('name') || '';
+      mask.split('').forEach((bit, pos)=>{
+         if (bit === '1') {
+            dayIdx[pos] = Object.keys(dayIdx).length; // 0,1,2…
+            dayNames[dayIdx[pos]] = name || ('Day '+(pos+1));
+         }
+      });
+  });
+  // fallback: Monday-Friday
+  if (!dayNames.length) ['Mon','Tue','Wed','Thu','Fri'].forEach((n,i)=>{
+      dayIdx[i]=i; dayNames[i]=n;
+  });
+
+  /* ---------- empty grid ---------- */
+  const table = Array.from({length: periods.length},
+                ()=>Array.from({length: dayNames.length}, () => []));
+
+  /* ---------- fill grid from <card> ---------- */
+  doc.querySelectorAll('card').forEach(card=>{
+      const periodNum = +card.getAttribute('period');
+      const row       = periodIdx[periodNum];
+      if (row === undefined) return;            // unknown period → skip
+
+      const lessonId  = card.getAttribute('lessonid');
+      const info      = lessonInfo[lessonId] || {};
+      const subjShort = subjNameById[info.subject] || '—';
+      const teachers  = (info.teachers || [])
+                          .map(tid => teacherNameById[tid] || '')
+                          .filter(Boolean);
+
+      const contentHTML = subjShort +
+        (teachers.length ? '<br><small>'+teachers.join('<br>')+'</small>' : '');
+
+      const mask = card.getAttribute('days') || '';   // e.g. "01000"
+      mask.split('').forEach((bit,pos)=>{
+          if (bit==='1' && dayIdx[pos] !== undefined){
+              table[row][dayIdx[pos]].push(contentHTML);
           }
       });
   });
-  wrap.appendChild(tbl);
+
+  return {dayNames, periods, table};
 }
 
-/* --- utilities ------------------------------------------------------ */
-function clearSchedule(){
-  wrap.innerHTML='';
-  clearBtn.disabled=true;
-  xmlInput.value='';
+/* ------------------------------------------------------------------
+   HTML renderer
+------------------------------------------------------------------ */
+function renderTable ({dayNames, periods, table}) {
+  schedule.innerHTML = '';
+
+  const tbl   = document.createElement('table');
+  const thead = tbl.createTHead();
+  const hrow  = thead.insertRow();
+  hrow.insertCell().outerHTML = '<th>Time</th>';
+  dayNames.forEach(n => hrow.insertCell().outerHTML = `<th>${n}</th>`);
+
+  const tbody = tbl.createTBody();
+  periods.forEach((p,row) =>{
+      const tr = tbody.insertRow();
+      tr.insertCell().innerHTML = `${p.start}&nbsp;–&nbsp;${p.end}`;
+      dayNames.forEach((_,col)=>{
+          const cell = tr.insertCell();
+          if (table[row][col].length){
+              cell.innerHTML = table[row][col].join('<hr>');
+          }
+      });
+  });
+
+  schedule.appendChild(tbl);
+}
+
+/* ------------------------------------------------------------------ */
+function clearSchedule () {
+  schedule.innerHTML = '';
+  fileInput.value = '';
+  btnClear.disabled = true;
 }
 </script>
 </body></html>
