@@ -1,7 +1,16 @@
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Weekly Schedule (robust day map)</title>
+<title>Weekly Schedule (with Firebase)</title>
+
+<!-- ▸ Firebase compat SDKs (no bundler required) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-analytics-compat.js"></script>
+<!-- If you later need Auth / Firestore just add:
+<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-firestore-compat.js"></script>
+-->
+
 <style>
   body{font-family:Arial,Helvetica,sans-serif;margin:20px}
   h2{margin-top:0}
@@ -29,57 +38,76 @@
 <div id="schedule" class="table-wrapper"></div>
 
 <script>
+/* ------------------------------------------------------------------
+   Firebase boot-strap  (uses the config you provided)
+------------------------------------------------------------------ */
+const firebaseConfig = {
+  apiKey:            "AIzaSyDtpSlQx8VxnqtI4wOJtAANfQ1grpd4_1o",
+  authDomain:        "jadualharian-c1c02.firebaseapp.com",
+  projectId:         "jadualharian-c1c02",
+  storageBucket:     "jadualharian-c1c02.firebasestorage.app",
+  messagingSenderId: "69074885448",
+  appId:             "1:69074885448:web:92de8875a7df9d4f47317d",
+  measurementId:     "G-0T6V0EP48J"
+};
+
+firebase.initializeApp(firebaseConfig);
+firebase.analytics();
+
 /* ============ DOM refs ============ */
 const fileInp  = document.getElementById('xmlFile');
 const btnUp    = document.getElementById('btnUpload');
 const btnClear = document.getElementById('btnClear');
 const target   = document.getElementById('schedule');
 
-btnUp.onclick       = () => fileInp.click();
-fileInp.onchange    = handleFile;
-btnClear.onclick    = () => { target.innerHTML=''; fileInp.value=''; btnClear.disabled=true; };
+btnUp.onclick    = () => fileInp.click();
+fileInp.onchange = handleFile;
+btnClear.onclick = () => { target.innerHTML=''; fileInp.value=''; btnClear.disabled=true; };
 
 /* ============ file → table ============ */
 function handleFile(){
   const f = fileInp.files?.[0]; if(!f) return;
   const rdr = new FileReader();
   rdr.onload = e=>{
-    try{ renderTable( extract(new DOMParser().parseFromString(e.target.result,'text/xml')) ); btnClear.disabled=false; }
-    catch(err){ alert('Unable to parse timetable: '+err.message); }
+    try{
+      const xmlDoc = new DOMParser().parseFromString(e.target.result,'text/xml');
+      renderTable( extract(xmlDoc) );
+      btnClear.disabled=false;
+    }catch(err){
+      alert('Unable to parse timetable: '+err.message);
+    }
   };
   rdr.readAsText(f);
 }
 
 /* ------------------------------------------------------------------
-   Extractor – now ignores “Any day” / “Every day” multi-bit masks
+   Extractor – skips “Any day / Every day” multi-bit masks
 ------------------------------------------------------------------ */
 function extract(doc){
   const byTag = t => [...doc.getElementsByTagName(t), ...doc.getElementsByTagName(t.toUpperCase())];
 
-  /* ----- subjects & teachers dictionaries ----- */
+  /* --- dictionaries --- */
   const subj = Object.fromEntries( byTag('subject').map(s=>[s.id, s.getAttribute('short')||s.getAttribute('name')||'—']) );
   const tch  = Object.fromEntries( byTag('teacher').map(t=>{
       const n=(t.getAttribute('firstname')+' '+t.getAttribute('lastname')).trim();
       return [t.id, n||t.getAttribute('lastname')||t.getAttribute('firstname')||''];
   }));
-
-  /* ----- lessons (id → {subject, teachers[]}) ----- */
   const lesson = Object.fromEntries( byTag('lesson').map(l=>[
       l.id,
       {s: l.getAttribute('subjectid'),
        T: (l.getAttribute('teacherids')||'').split(',').filter(Boolean)}
   ]));
 
-  /* ----- periods ----- */
+  /* --- periods --- */
   const periods = byTag('periods')[0]?.children;
   if(!periods?.length) throw new Error('No <period> catalogue found');
-  const rowIdx = {};                      // numeric period → table row
+  const rowIdx = {};
   const rows   = [...periods].map((p,i)=>{
       rowIdx[+p.getAttribute('period')] = i;
       return {start:p.getAttribute('starttime'), end:p.getAttribute('endtime')};
   });
 
-  /* ----- day names / map (skip multi-bit entries) ----- */
+  /* --- day names / map --- */
   const dayIdx={}, dayNames=[];
   byTag('daysdef').forEach(d=>{
       const mask=d.getAttribute('days'); if(!mask||mask.includes(',')) return;
@@ -92,18 +120,18 @@ function extract(doc){
   });
   if(!dayNames.length) ['Mon','Tue','Wed','Thu','Fri'].forEach((n,i)=>{dayIdx[i]=i;dayNames.push(n);});
 
-  /* ----- blank grid ----- */
+  /* --- grid scaffold --- */
   const grid = Array.from({length:rows.length},()=>Array.from({length:dayNames.length},()=>[]));
 
-  /* ----- fill grid from <card> ----- */
+  /* --- fill grid --- */
   byTag('card').forEach(c=>{
       const r = rowIdx[ +c.getAttribute('period') ];
       const mask = c.getAttribute('days')||'';
       if(r===undefined) return;
 
-      const info  = lesson[c.getAttribute('lessonid')] || {};
-      const text  = (subj[info.s]||'—')
-                    + (info.T?.length ? '<br><small>'+info.T.map(id=>tch[id]||'').join('<br>')+'</small>' : '');
+      const info = lesson[c.getAttribute('lessonid')] || {};
+      const text = (subj[info.s]||'—')
+                   + (info.T?.length ? '<br><small>'+info.T.map(id=>tch[id]||'').join('<br>')+'</small>' : '');
 
       [...mask].forEach((b,p)=>{ if(b==='1' && dayIdx[p]!==undefined) grid[r][dayIdx[p]].push(text); });
   });
@@ -111,17 +139,16 @@ function extract(doc){
   return {dayNames, rows, grid};
 }
 
-/* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------
+   Renderer
+------------------------------------------------------------------ */
 function renderTable({dayNames, rows, grid}){
   target.innerHTML='';
-  const tbl = document.createElement('table');
-
-  /* header */
-  const h = tbl.createTHead().insertRow();
+  const tbl=document.createElement('table');
+  const h=tbl.createTHead().insertRow();
   h.insertCell().outerHTML='<th>Time</th>';
   dayNames.forEach(n=>h.insertCell().outerHTML=`<th>${n}</th>`);
 
-  /* body */
   const body = tbl.createTBody();
   rows.forEach((p,r)=>{
       const tr=body.insertRow();
@@ -131,7 +158,6 @@ function renderTable({dayNames, rows, grid}){
           if(grid[r][c].length) cell.innerHTML=grid[r][c].join('<hr>');
       });
   });
-
   target.appendChild(tbl);
 }
 </script>
