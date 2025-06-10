@@ -1,9 +1,7 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
+<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Weekly Schedule (robust XML loader)</title>
+<title>Weekly Schedule (ID-safe loader)</title>
 <style>
   body{font-family:Arial,Helvetica,sans-serif;margin:20px}
   h2{margin-top:0}
@@ -19,8 +17,7 @@
   hr{border:0;border-top:1px dotted #ccc;margin:.3em 0}
   .table-wrapper{overflow-x:auto}
 </style>
-</head>
-<body>
+</head><body>
 
 <h2>Weekly Schedule</h2>
 <div class="controls">
@@ -32,7 +29,7 @@
 <div id="scheduleContainer" class="table-wrapper"></div>
 
 <script>
-/* ---------- DOM hooks ---------- */
+/* --- DOM refs -------------------------------------------------------- */
 const xmlInput  = document.getElementById('xmlFileInput');
 const uploadBtn = document.getElementById('uploadBtn');
 const clearBtn  = document.getElementById('clearBtn');
@@ -42,7 +39,7 @@ uploadBtn.addEventListener('click', () => xmlInput.click());
 xmlInput.addEventListener('change', handleFile);
 clearBtn.addEventListener('click', clearSchedule);
 
-/* ---------- file->table pipeline ---------- */
+/* --- file-to-HTML pipeline ------------------------------------------ */
 function handleFile(){
   const f = xmlInput.files?.[0];
   if(!f) return;
@@ -52,7 +49,7 @@ function handleFile(){
       const doc  = new DOMParser().parseFromString(e.target.result,'text/xml');
       const data = extractScheduleData(doc);
       renderTable(data);
-      clearBtn.disabled=false;
+      clearBtn.disabled = false;
     }catch(err){
       alert('Unable to parse timetable: '+err.message);
     }
@@ -60,97 +57,96 @@ function handleFile(){
   r.readAsText(f);
 }
 
-/* ---------- resilient extractor ---------- */
+/* --------------------------------------------------------------------
+   Robust extractor: builds ID→index maps for both days & periods
+-------------------------------------------------------------------- */
 function extractScheduleData(doc){
-  const T = t => [...doc.getElementsByTagName(t),...doc.getElementsByTagName(t.toUpperCase())];
+  const tag = t => [...doc.getElementsByTagName(t), ...doc.getElementsByTagName(t.toUpperCase())];
 
-  /* ---- DAYS ---- */
-  let dayNodes = T('day').filter(n=> n.parentElement &&
-                                     n.parentElement.tagName.toLowerCase().includes('day')); // keep only catalogue, not <card><day>
-  if(!dayNodes.length) dayNodes = T('daydefs').flatMap(n=>T.call(n,'day'));        // aSc variant
-  const days = dayNodes.map(n=>{
-    return n.getAttribute('long')  || n.getAttribute('name') ||
-           n.getAttribute('short') || n.textContent.trim();
-  }).filter(Boolean);
+  /* ---- DAYS catalogue ---- */
+  const dayNodes = tag('day').filter(n =>
+      /day/.test(n.parentElement?.tagName.toLowerCase()) && n.hasAttribute('id'));
+  const dayIds   = dayNodes.map(n => +n.getAttribute('id'));
+  const days     = dayNodes.map(n =>
+        n.getAttribute('long')  || n.getAttribute('name') ||
+        n.getAttribute('short') || ('Day '+n.getAttribute('id')));
+  const dayIdx   = Object.fromEntries(dayIds.map((id,i)=>[id,i]));
 
-  /* if still empty → build synthetic list from card IDs */
-  let dayIndexLookup = {};
+  /* fallback if catalogue missing */
   if(!days.length){
-    const ids = [...new Set( T('card').flatMap(c=>{
-      const d = c.querySelector('day,dayid,Day'); return d? [+d.textContent]:[];
-    }))].sort((a,b)=>a-b);
-    ids.forEach((id,i)=> dayIndexLookup[id]=i);
-    ids.forEach((_,i)=> days.push('Day '+(i+1)));
+      const idsFromCards = [...new Set(tag('card').map(c=>+c.querySelector('dayid,day,Day')?.textContent))]
+                           .filter(Number.isFinite)
+                           .sort((a,b)=>a-b);
+      idsFromCards.forEach((id,i)=>{ dayIdx[id]=i; days.push('Day '+(i+1)); });
   }
 
-  /* ---- PERIODS ---- */
-  let periodNodes = T('period').filter(n=> n.parentElement &&
-                                           n.parentElement.tagName.toLowerCase().includes('period'));
-  const periods = periodNodes.map(p=>{
-    const start = p.getAttribute('starttime')||p.getAttribute('start')||
-                  p.querySelector('starttime,start,Start')?.textContent||
-                  p.getAttribute('name')||'';
-    const end   = p.getAttribute('endtime')  ||p.getAttribute('end')  ||
-                  p.querySelector('endtime,end,End')?.textContent   ||'';
-    return {start,end};
-  });
-  if(!periods.length) throw new Error('No <period> tags found');
+  /* ---- PERIODS catalogue ---- */
+  const perNodes = tag('period').filter(n =>
+        /period/.test(n.parentElement?.tagName.toLowerCase()) && n.hasAttribute('id'));
+  const perIds   = perNodes.map(n => +n.getAttribute('id'));
+  const periods  = perNodes.map(n => ({
+        start: n.getAttribute('starttime') || n.getAttribute('start') ||
+               n.querySelector('starttime,start')?.textContent || '',
+        end  : n.getAttribute('endtime')   || n.getAttribute('end')   ||
+               n.querySelector('endtime,end')?.textContent   || ''
+  }));
+  const perIdx   = Object.fromEntries(perIds.map((id,i)=>[id,i]));
 
-  /* ---- TABLE scaffold ---- */
+  if(!periods.length) throw new Error('No <period> catalogue found');
+
+  /* ---- Empty table scaffold -------------------------------------- */
   const table = Array.from({length:periods.length},
                 ()=>Array.from({length:days.length},()=>[]));
 
-  T('card').forEach(card=>{
-    const dNode = card.querySelector('day,dayid,Day');
-    const pNode = card.querySelector('period,Period');
-    if(!dNode||!pNode) return;
+  /* ---- Fill from <cards> ----------------------------------------- */
+  tag('card').forEach(card=>{
+      const dId = +card.querySelector('dayid,day,Day')?.textContent;
+      const pId = +card.querySelector('period,Period')?.textContent;
+      const row = perIdx[pId];       // look up row & col safely
+      const col = dayIdx[dId];
+      if(row===undefined || col===undefined) return;  // skip odd references
 
-    const rawDay = +dNode.textContent;
-    const rawPer = +pNode.textContent;
-    const dayIdx = dayIndexLookup[rawDay] ?? rawDay; // fallback if synthetic days list
-    if(!table[rawPer] || table[rawPer][dayIdx]===undefined) return;
-
-    const subj = (card.querySelector('subject,subj,Subject')||{}).textContent?.trim()||'—';
-    const tch  = (card.querySelector('teacher,teacher1,staff,Teacher')||{}).textContent?.trim()||'';
-    table[rawPer][dayIdx].push({subject:subj,teacher:tch});
+      const subj = (card.querySelector('subject,subj,Subject')||{}).textContent?.trim() || '—';
+      const tch  = (card.querySelector('teacher,teacher1,staff,Teacher')||{}).textContent?.trim() || '';
+      table[row][col].push({subject:subj,teacher:tch});
   });
 
   return {days,periods,table};
 }
 
-/* ---------- renderer ---------- */
+/* --------------------------------------------------------------------
+   Render <table>
+-------------------------------------------------------------------- */
 function renderTable({days,periods,table}){
   wrap.innerHTML='';
-  const tbl=document.createElement('table');
+  const tbl = document.createElement('table');
 
   /* header */
-  const thead = tbl.createTHead(), hrow=thead.insertRow();
+  const thead = tbl.createTHead(), hrow = thead.insertRow();
   hrow.insertCell().outerHTML='<th>Time</th>';
-  days.forEach(d=>hrow.insertCell().outerHTML=`<th>${d}</th>`);
+  days.forEach(d => hrow.insertCell().outerHTML=`<th>${d}</th>`);
 
   /* body */
   const tbody = tbl.createTBody();
   periods.forEach((per,r)=>{
-    const tr=tbody.insertRow();
-    tr.insertCell().innerHTML=`${per.start}&nbsp;–&nbsp;${per.end}`;
-    days.forEach((_,c)=>{
-      const cell=tr.insertCell();
-      const slot=table[r][c];
-      if(slot.length){
-        cell.innerHTML=slot.map(s=>`${s.subject}<br><small>${s.teacher}</small>`).join('<hr>');
-      }
-    });
+      const tr = tbody.insertRow();
+      tr.insertCell().innerHTML = `${per.start}&nbsp;–&nbsp;${per.end}`;
+      days.forEach((_,c)=>{
+          const cell = tr.insertCell();
+          const slot = table[r][c];
+          if(slot.length){
+              cell.innerHTML = slot.map(s=>`${s.subject}<br><small>${s.teacher}</small>`).join('<hr>');
+          }
+      });
   });
-
   wrap.appendChild(tbl);
 }
 
-/* ---------- utilities ---------- */
+/* --- utilities ------------------------------------------------------ */
 function clearSchedule(){
   wrap.innerHTML='';
   clearBtn.disabled=true;
   xmlInput.value='';
 }
 </script>
-</body>
-</html>
+</body></html>
