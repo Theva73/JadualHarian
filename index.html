@@ -1,16 +1,9 @@
-<!DOCTYPE html><html lang="en"><head>
+<!DOCTYPE html>
+<html lang="en">
+<head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Weekly Schedule (with Firebase)</title>
-
-<!-- ▸ Firebase compat SDKs (no bundler required) -->
-<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-analytics-compat.js"></script>
-<!-- If you later need Auth / Firestore just add:
-<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.1/firebase-firestore-compat.js"></script>
--->
-
+<title>Weekly Schedule (robust day map)</title>
 <style>
   body{font-family:Arial,Helvetica,sans-serif;margin:20px}
   h2{margin-top:0}
@@ -25,10 +18,19 @@
   small{display:block;color:#555;font-size:.8em}
   hr{border:0;border-top:1px dotted #ccc;margin:.3em 0}
   .table-wrapper{overflow-x:auto}
+  #userIdDisplay {
+    margin-bottom: 1rem;
+    font-size: 0.9em;
+    color: #666;
+    word-break: break-all; /* Ensures long IDs wrap */
+  }
 </style>
-</head><body>
+</head>
+<body>
 
 <h2>Weekly Schedule</h2>
+<div id="userIdDisplay">Loading User ID...</div>
+
 <div class="controls">
   <input type="file" id="xmlFile" accept=".xml">
   <button id="btnUpload">Upload XML</button>
@@ -37,22 +39,77 @@
 
 <div id="schedule" class="table-wrapper"></div>
 
-<script>
-/* ------------------------------------------------------------------
-   Firebase boot-strap  (uses the config you provided)
------------------------------------------------------------------- */
-const firebaseConfig = {
-  apiKey:            "AIzaSyDtpSlQx8VxnqtI4wOJtAANfQ1grpd4_1o",
-  authDomain:        "jadualharian-c1c02.firebaseapp.com",
-  projectId:         "jadualharian-c1c02",
-  storageBucket:     "jadualharian-c1c02.firebasestorage.app",
+<script type="module">
+// Import the functions you need from the Firebase SDKs
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+// If you plan to save data to Firestore, you would import it like this:
+// import { getFirestore, doc, setDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+
+// Your web app's Firebase configuration from SDK_JadualHarian.txt
+// These global variables are provided by the Canvas environment.
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+  apiKey: "AIzaSyDtpSlQx8VxnqtI4wOJtAANfQ1grpd4_1o",
+  authDomain: "jadualharian-c1c02.firebaseapp.com",
+  projectId: "jadualharian-c1c02",
+  storageBucket: "jadualharian-c1c02.firebasestorage.app",
   messagingSenderId: "69074885448",
-  appId:             "1:69074885448:web:92de8875a7df9d4f47317d",
-  measurementId:     "G-0T6V0EP48J"
+  appId: "1:69074885448:web:92de8875a7df9d4f47317d",
+  measurementId: "G-0T6V0EP48J"
 };
 
-firebase.initializeApp(firebaseConfig);
-firebase.analytics();
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+// const db = getFirestore(app); // Uncomment if you use Firestore
+
+let currentUserId = null; // To store the user ID once authenticated
+
+// Authenticate and get user ID
+async function authenticateUser() {
+  const userIdDisplay = document.getElementById('userIdDisplay');
+  try {
+    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+      // Sign in with the provided custom token
+      await signInWithCustomToken(auth, __initial_auth_token);
+    } else {
+      // Sign in anonymously if no custom token is provided
+      await signInAnonymously(auth);
+    }
+  } catch (error) {
+    console.error("Firebase authentication error:", error);
+    // Display error message to user, e.g., using displayMessageBox
+    displayMessageBox('Authentication Error', 'Failed to sign in: ' + error.message);
+    // Fallback to a random UUID if authentication fails for some reason
+    currentUserId = crypto.randomUUID();
+    userIdDisplay.textContent = `User ID: ${currentUserId} (Guest - Auth Failed)`;
+  }
+}
+
+// Listen for authentication state changes to get the user ID
+onAuthStateChanged(auth, (user) => {
+  const userIdDisplay = document.getElementById('userIdDisplay');
+  if (user) {
+    // User is signed in
+    currentUserId = user.uid;
+    userIdDisplay.textContent = `User ID: ${currentUserId}`;
+    console.log("Authenticated User ID:", currentUserId);
+    // Now that authentication is ready, you can proceed with Firestore operations if needed
+  } else {
+    // User is signed out or not yet authenticated
+    // If we're still loading, or signInAnonymously failed, generate a temporary ID
+    if (!currentUserId) { // Only generate if not already set by error
+        currentUserId = crypto.randomUUID();
+        userIdDisplay.textContent = `User ID: ${currentUserId} (Guest)`;
+    }
+    console.log("No user signed in. Using generated guest ID:", currentUserId);
+  }
+});
+
+// Call authentication function when the script loads
+authenticateUser();
 
 /* ============ DOM refs ============ */
 const fileInp  = document.getElementById('xmlFile');
@@ -60,54 +117,52 @@ const btnUp    = document.getElementById('btnUpload');
 const btnClear = document.getElementById('btnClear');
 const target   = document.getElementById('schedule');
 
-btnUp.onclick    = () => fileInp.click();
-fileInp.onchange = handleFile;
-btnClear.onclick = () => { target.innerHTML=''; fileInp.value=''; btnClear.disabled=true; };
+btnUp.onclick       = () => fileInp.click();
+fileInp.onchange    = handleFile;
+btnClear.onclick    = () => { target.innerHTML=''; fileInp.value=''; btnClear.disabled=true; };
 
 /* ============ file → table ============ */
 function handleFile(){
   const f = fileInp.files?.[0]; if(!f) return;
   const rdr = new FileReader();
   rdr.onload = e=>{
-    try{
-      const xmlDoc = new DOMParser().parseFromString(e.target.result,'text/xml');
-      renderTable( extract(xmlDoc) );
-      btnClear.disabled=false;
-    }catch(err){
-      alert('Unable to parse timetable: '+err.message);
-    }
+    try{ renderTable( extract(new DOMParser().parseFromString(e.target.result,'text/xml')) ); btnClear.disabled=false; }
+    // Using a custom message box instead of alert()
+    catch(err){ displayMessageBox('Error', 'Unable to parse timetable: ' + err.message); }
   };
   rdr.readAsText(f);
 }
 
 /* ------------------------------------------------------------------
-   Extractor – skips “Any day / Every day” multi-bit masks
+   Extractor – now ignores “Any day” / “Every day” multi-bit masks
 ------------------------------------------------------------------ */
 function extract(doc){
   const byTag = t => [...doc.getElementsByTagName(t), ...doc.getElementsByTagName(t.toUpperCase())];
 
-  /* --- dictionaries --- */
+  /* ----- subjects & teachers dictionaries ----- */
   const subj = Object.fromEntries( byTag('subject').map(s=>[s.id, s.getAttribute('short')||s.getAttribute('name')||'—']) );
   const tch  = Object.fromEntries( byTag('teacher').map(t=>{
       const n=(t.getAttribute('firstname')+' '+t.getAttribute('lastname')).trim();
       return [t.id, n||t.getAttribute('lastname')||t.getAttribute('firstname')||''];
   }));
+
+  /* ----- lessons (id → {subject, teachers[]}) ----- */
   const lesson = Object.fromEntries( byTag('lesson').map(l=>[
       l.id,
       {s: l.getAttribute('subjectid'),
        T: (l.getAttribute('teacherids')||'').split(',').filter(Boolean)}
   ]));
 
-  /* --- periods --- */
+  /* ----- periods ----- */
   const periods = byTag('periods')[0]?.children;
   if(!periods?.length) throw new Error('No <period> catalogue found');
-  const rowIdx = {};
+  const rowIdx = {};                      // numeric period → table row
   const rows   = [...periods].map((p,i)=>{
       rowIdx[+p.getAttribute('period')] = i;
       return {start:p.getAttribute('starttime'), end:p.getAttribute('endtime')};
   });
 
-  /* --- day names / map --- */
+  /* ----- day names / map (skip multi-bit entries) ----- */
   const dayIdx={}, dayNames=[];
   byTag('daysdef').forEach(d=>{
       const mask=d.getAttribute('days'); if(!mask||mask.includes(',')) return;
@@ -120,18 +175,18 @@ function extract(doc){
   });
   if(!dayNames.length) ['Mon','Tue','Wed','Thu','Fri'].forEach((n,i)=>{dayIdx[i]=i;dayNames.push(n);});
 
-  /* --- grid scaffold --- */
+  /* ----- blank grid ----- */
   const grid = Array.from({length:rows.length},()=>Array.from({length:dayNames.length},()=>[]));
 
-  /* --- fill grid --- */
+  /* ----- fill grid from <card> ----- */
   byTag('card').forEach(c=>{
       const r = rowIdx[ +c.getAttribute('period') ];
       const mask = c.getAttribute('days')||'';
       if(r===undefined) return;
 
-      const info = lesson[c.getAttribute('lessonid')] || {};
-      const text = (subj[info.s]||'—')
-                   + (info.T?.length ? '<br><small>'+info.T.map(id=>tch[id]||'').join('<br>')+'</small>' : '');
+      const info  = lesson[c.getAttribute('lessonid')] || {};
+      const text  = (subj[info.s]||'—')
+                    + (info.T?.length ? '<br><small>'+info.T.map(id=>tch[id]||'').join('<br>')+'</small>' : '');
 
       [...mask].forEach((b,p)=>{ if(b==='1' && dayIdx[p]!==undefined) grid[r][dayIdx[p]].push(text); });
   });
@@ -139,16 +194,17 @@ function extract(doc){
   return {dayNames, rows, grid};
 }
 
-/* ------------------------------------------------------------------
-   Renderer
------------------------------------------------------------------- */
+/* ------------------------------------------------------------------ */
 function renderTable({dayNames, rows, grid}){
   target.innerHTML='';
-  const tbl=document.createElement('table');
-  const h=tbl.createTHead().insertRow();
+  const tbl = document.createElement('table');
+
+  /* header */
+  const h = tbl.createTHead().insertRow();
   h.insertCell().outerHTML='<th>Time</th>';
   dayNames.forEach(n=>h.insertCell().outerHTML=`<th>${n}</th>`);
 
+  /* body */
   const body = tbl.createTBody();
   rows.forEach((p,r)=>{
       const tr=body.insertRow();
@@ -158,7 +214,35 @@ function renderTable({dayNames, rows, grid}){
           if(grid[r][c].length) cell.innerHTML=grid[r][c].join('<hr>');
       });
   });
+
   target.appendChild(tbl);
 }
+
+// Custom message box function (replaces alert())
+function displayMessageBox(title, message) {
+  const messageBox = document.createElement('div');
+  messageBox.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    padding: 20px;
+    border: 1px solid #ccc;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    z-index: 1000;
+    border-radius: 8px;
+    max-width: 90%;
+    text-align: center;
+    font-family: Arial, Helvetica, sans-serif;
+  `;
+  messageBox.innerHTML = `
+    <h3 style="margin-top:0;">${title}</h3>
+    <p>${message}</p>
+    <button onclick="this.parentNode.remove()" style="padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">OK</button>
+  `;
+  document.body.appendChild(messageBox);
+}
 </script>
-</body></html>
+</body>
+</html>
