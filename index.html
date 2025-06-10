@@ -1,21 +1,21 @@
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Weekly Schedule (aSc binary-days loader)</title>
+<title>Weekly Schedule (robust day map)</title>
 <style>
- body{font-family:Arial,Helvetica,sans-serif;margin:20px}
- h2{margin-top:0}
- .controls{margin-bottom:1rem;display:flex;gap:.5rem;flex-wrap:wrap}
- button{padding:.5rem .9rem;font-size:.9rem;cursor:pointer;border:1px solid #888;border-radius:4px;background:#fafafa}
- button:disabled{opacity:.5;cursor:not-allowed}
- input[type=file]{display:none}
- table{border-collapse:collapse;width:100%;min-width:640px}
- th,td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}
- th{background:#f0f0f0}
- tr:nth-child(even){background:#fafafa}
- small{display:block;color:#555;font-size:.8em}
- hr{border:0;border-top:1px dotted #ccc;margin:.3em 0}
- .table-wrapper{overflow-x:auto}
+  body{font-family:Arial,Helvetica,sans-serif;margin:20px}
+  h2{margin-top:0}
+  .controls{margin-bottom:1rem;display:flex;gap:.5rem;flex-wrap:wrap}
+  button{padding:.5rem .9rem;font-size:.9rem;cursor:pointer;border:1px solid #888;border-radius:4px;background:#fafafa}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  input[type=file]{display:none}
+  table{border-collapse:collapse;width:100%;min-width:640px}
+  th,td{border:1px solid #ccc;padding:6px;text-align:center;vertical-align:top}
+  th{background:#f0f0f0}
+  tr:nth-child(even){background:#fafafa}
+  small{display:block;color:#555;font-size:.8em}
+  hr{border:0;border-top:1px dotted #ccc;margin:.3em 0}
+  .table-wrapper{overflow-x:auto}
 </style>
 </head><body>
 
@@ -23,164 +23,116 @@
 <div class="controls">
   <input type="file" id="xmlFile" accept=".xml">
   <button id="btnUpload">Upload XML</button>
-  <button id="btnClear" disabled>Clear Schedule</button>
+  <button id="btnClear"  disabled>Clear Schedule</button>
 </div>
 
 <div id="schedule" class="table-wrapper"></div>
 
 <script>
 /* ============ DOM refs ============ */
-const fileInput = document.getElementById('xmlFile');
-const btnUpload = document.getElementById('btnUpload');
-const btnClear  = document.getElementById('btnClear');
-const schedule  = document.getElementById('schedule');
+const fileInp  = document.getElementById('xmlFile');
+const btnUp    = document.getElementById('btnUpload');
+const btnClear = document.getElementById('btnClear');
+const target   = document.getElementById('schedule');
 
-btnUpload.onclick = () => fileInput.click();
-fileInput.onchange = handleFile;
-btnClear .onclick  = clearSchedule;
+btnUp.onclick       = () => fileInp.click();
+fileInp.onchange    = handleFile;
+btnClear.onclick    = () => { target.innerHTML=''; fileInp.value=''; btnClear.disabled=true; };
 
-/* ============ file->table ============ */
-function handleFile () {
-  const file = fileInput.files?.[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      const doc  = new DOMParser().parseFromString(e.target.result, 'text/xml');
-      const data = extractSchedule(doc);
-      renderTable(data);
-      btnClear.disabled = false;
-    } catch (err) {
-      alert('Unable to parse timetable: ' + err.message);
-    }
+/* ============ file → table ============ */
+function handleFile(){
+  const f = fileInp.files?.[0]; if(!f) return;
+  const rdr = new FileReader();
+  rdr.onload = e=>{
+    try{ renderTable( extract(new DOMParser().parseFromString(e.target.result,'text/xml')) ); btnClear.disabled=false; }
+    catch(err){ alert('Unable to parse timetable: '+err.message); }
   };
-  reader.readAsText(file);
+  rdr.readAsText(f);
 }
 
 /* ------------------------------------------------------------------
-   Extractor for “binary-days + numeric-period” aSc XML
+   Extractor – now ignores “Any day” / “Every day” multi-bit masks
 ------------------------------------------------------------------ */
-function extractSchedule (doc) {
+function extract(doc){
+  const byTag = t => [...doc.getElementsByTagName(t), ...doc.getElementsByTagName(t.toUpperCase())];
 
-  /* ---------- subjects & teachers dictionaries ---------- */
-  const subjNameById = {};
-  doc.querySelectorAll('subject').forEach(s =>{
-     subjNameById[s.getAttribute('id')] =
-          s.getAttribute('short') || s.getAttribute('name') || '—';
+  /* ----- subjects & teachers dictionaries ----- */
+  const subj = Object.fromEntries( byTag('subject').map(s=>[s.id, s.getAttribute('short')||s.getAttribute('name')||'—']) );
+  const tch  = Object.fromEntries( byTag('teacher').map(t=>{
+      const n=(t.getAttribute('firstname')+' '+t.getAttribute('lastname')).trim();
+      return [t.id, n||t.getAttribute('lastname')||t.getAttribute('firstname')||''];
+  }));
+
+  /* ----- lessons (id → {subject, teachers[]}) ----- */
+  const lesson = Object.fromEntries( byTag('lesson').map(l=>[
+      l.id,
+      {s: l.getAttribute('subjectid'),
+       T: (l.getAttribute('teacherids')||'').split(',').filter(Boolean)}
+  ]));
+
+  /* ----- periods ----- */
+  const periods = byTag('periods')[0]?.children;
+  if(!periods?.length) throw new Error('No <period> catalogue found');
+  const rowIdx = {};                      // numeric period → table row
+  const rows   = [...periods].map((p,i)=>{
+      rowIdx[+p.getAttribute('period')] = i;
+      return {start:p.getAttribute('starttime'), end:p.getAttribute('endtime')};
   });
 
-  const teacherNameById = {};
-  doc.querySelectorAll('teacher').forEach(t =>{
-     teacherNameById[t.getAttribute('id')] =
-        t.getAttribute('short') || t.getAttribute('name') || '';
+  /* ----- day names / map (skip multi-bit entries) ----- */
+  const dayIdx={}, dayNames=[];
+  byTag('daysdef').forEach(d=>{
+      const mask=d.getAttribute('days'); if(!mask||mask.includes(',')) return;
+      const bits=[...mask];
+      const pos=bits.indexOf('1');
+      if(pos>-1 && bits.filter(b=>b==='1').length===1 && !(pos in dayIdx)){
+          dayIdx[pos]=dayNames.length;
+          dayNames.push(d.getAttribute('short')||d.getAttribute('name')||('Day '+(pos+1)));
+      }
+  });
+  if(!dayNames.length) ['Mon','Tue','Wed','Thu','Fri'].forEach((n,i)=>{dayIdx[i]=i;dayNames.push(n);});
+
+  /* ----- blank grid ----- */
+  const grid = Array.from({length:rows.length},()=>Array.from({length:dayNames.length},()=>[]));
+
+  /* ----- fill grid from <card> ----- */
+  byTag('card').forEach(c=>{
+      const r = rowIdx[ +c.getAttribute('period') ];
+      const mask = c.getAttribute('days')||'';
+      if(r===undefined) return;
+
+      const info  = lesson[c.getAttribute('lessonid')] || {};
+      const text  = (subj[info.s]||'—')
+                    + (info.T?.length ? '<br><small>'+info.T.map(id=>tch[id]||'').join('<br>')+'</small>' : '');
+
+      [...mask].forEach((b,p)=>{ if(b==='1' && dayIdx[p]!==undefined) grid[r][dayIdx[p]].push(text); });
   });
 
-  /* ---------- lessons:  id -> {subjectid, teacherIds[]} ---------- */
-  const lessonInfo = {};
-  doc.querySelectorAll('lesson').forEach(l =>{
-     lessonInfo[l.getAttribute('id')] = {
-        subject : l.getAttribute('subjectid'),
-        teachers: (l.getAttribute('teacherids') || '').split(',').filter(Boolean)
-     };
-  });
-
-  /* ---------- periods catalogue & map ---------- */
-  const periodElems = [...doc.querySelectorAll('periods > period')];
-  if (!periodElems.length) throw new Error('No <period> catalogue found');
-
-  const periodIdx = {};                         // periodNumber → rowIndex
-  const periods   = periodElems.map((p, i) =>{
-      const num = +p.getAttribute('period') || i;
-      periodIdx[num] = i;
-      return {
-        start : p.getAttribute('starttime') || '',
-        end   : p.getAttribute('endtime')   || ''
-      };
-  });
-
-  /* ---------- day names & map ---------- */
-  const dayNames = [];
-  const dayIdx   = {};                          // bitPosition → columnIndex
-  // read every <daysdef days="10000" name="Monday" …/>
-  doc.querySelectorAll('daysdef').forEach(d =>{
-      const mask = d.getAttribute('days') || '';
-      const name = d.getAttribute('short') || d.getAttribute('name') || '';
-      mask.split('').forEach((bit, pos)=>{
-         if (bit === '1') {
-            dayIdx[pos] = Object.keys(dayIdx).length; // 0,1,2…
-            dayNames[dayIdx[pos]] = name || ('Day '+(pos+1));
-         }
-      });
-  });
-  // fallback: Monday-Friday
-  if (!dayNames.length) ['Mon','Tue','Wed','Thu','Fri'].forEach((n,i)=>{
-      dayIdx[i]=i; dayNames[i]=n;
-  });
-
-  /* ---------- empty grid ---------- */
-  const table = Array.from({length: periods.length},
-                ()=>Array.from({length: dayNames.length}, () => []));
-
-  /* ---------- fill grid from <card> ---------- */
-  doc.querySelectorAll('card').forEach(card=>{
-      const periodNum = +card.getAttribute('period');
-      const row       = periodIdx[periodNum];
-      if (row === undefined) return;            // unknown period → skip
-
-      const lessonId  = card.getAttribute('lessonid');
-      const info      = lessonInfo[lessonId] || {};
-      const subjShort = subjNameById[info.subject] || '—';
-      const teachers  = (info.teachers || [])
-                          .map(tid => teacherNameById[tid] || '')
-                          .filter(Boolean);
-
-      const contentHTML = subjShort +
-        (teachers.length ? '<br><small>'+teachers.join('<br>')+'</small>' : '');
-
-      const mask = card.getAttribute('days') || '';   // e.g. "01000"
-      mask.split('').forEach((bit,pos)=>{
-          if (bit==='1' && dayIdx[pos] !== undefined){
-              table[row][dayIdx[pos]].push(contentHTML);
-          }
-      });
-  });
-
-  return {dayNames, periods, table};
-}
-
-/* ------------------------------------------------------------------
-   HTML renderer
------------------------------------------------------------------- */
-function renderTable ({dayNames, periods, table}) {
-  schedule.innerHTML = '';
-
-  const tbl   = document.createElement('table');
-  const thead = tbl.createTHead();
-  const hrow  = thead.insertRow();
-  hrow.insertCell().outerHTML = '<th>Time</th>';
-  dayNames.forEach(n => hrow.insertCell().outerHTML = `<th>${n}</th>`);
-
-  const tbody = tbl.createTBody();
-  periods.forEach((p,row) =>{
-      const tr = tbody.insertRow();
-      tr.insertCell().innerHTML = `${p.start}&nbsp;–&nbsp;${p.end}`;
-      dayNames.forEach((_,col)=>{
-          const cell = tr.insertCell();
-          if (table[row][col].length){
-              cell.innerHTML = table[row][col].join('<hr>');
-          }
-      });
-  });
-
-  schedule.appendChild(tbl);
+  return {dayNames, rows, grid};
 }
 
 /* ------------------------------------------------------------------ */
-function clearSchedule () {
-  schedule.innerHTML = '';
-  fileInput.value = '';
-  btnClear.disabled = true;
+function renderTable({dayNames, rows, grid}){
+  target.innerHTML='';
+  const tbl = document.createElement('table');
+
+  /* header */
+  const h = tbl.createTHead().insertRow();
+  h.insertCell().outerHTML='<th>Time</th>';
+  dayNames.forEach(n=>h.insertCell().outerHTML=`<th>${n}</th>`);
+
+  /* body */
+  const body = tbl.createTBody();
+  rows.forEach((p,r)=>{
+      const tr=body.insertRow();
+      tr.insertCell().innerHTML=`${p.start}&nbsp;–&nbsp;${p.end}`;
+      dayNames.forEach((_,c)=>{
+          const cell=tr.insertCell();
+          if(grid[r][c].length) cell.innerHTML=grid[r][c].join('<hr>');
+      });
+  });
+
+  target.appendChild(tbl);
 }
 </script>
 </body></html>
