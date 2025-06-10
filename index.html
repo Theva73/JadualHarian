@@ -8,7 +8,8 @@
   body{font-family:Arial,Helvetica,sans-serif;margin:20px}
   h2{margin-top:0}
   .controls{margin-bottom:1rem;display:flex;gap:.5rem;flex-wrap:wrap}
-  button{padding:.5rem .9rem;font-size:.9rem;cursor:pointer;border:1px solid #888;border-radius:4px;background:#fafafa}
+  button{padding:.5rem .9rem;font-size:.9rem;cursor:pointer;border:1px solid #888;border-radius:4px;background:#fafafa; transition: all 0.2s ease;}
+  button:hover:not(:disabled) { background: #e0e0e0; }
   button:disabled{opacity:.5;cursor:not-allowed}
   input[type=file]{display:none}
   table{border-collapse:collapse;width:100%;min-width:640px}
@@ -24,6 +25,56 @@
     color: #666;
     word-break: break-all; /* Ensures long IDs wrap */
   }
+  .message-box {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    padding: 20px;
+    border: 1px solid #ccc;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    z-index: 1000;
+    border-radius: 8px;
+    max-width: 90%;
+    text-align: center;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  .message-box button {
+    padding: 8px 15px;
+    background: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-top: 10px;
+  }
+  .loading-indicator {
+    display: none; /* Hidden by default */
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 999;
+  }
+  .loading-indicator::after {
+    content: '';
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #3498db;
+    border-radius: 50%;
+    width: 30px;
+    height: 30px;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
 </style>
 </head>
 <body>
@@ -38,17 +89,17 @@
 </div>
 
 <div id="schedule" class="table-wrapper"></div>
+<div id="loadingIndicator" class="loading-indicator"></div>
+
 
 <script type="module">
 // Import the functions you need from the Firebase SDKs
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-// If you plan to save data to Firestore, you would import it like this:
-// import { getFirestore, doc, setDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+import { getFirestore, doc, setDoc, getDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
 
-// Your web app's Firebase configuration from SDK_JadualHarian.txt
-// These global variables are provided by the Canvas environment.
+// Global variables provided by the Canvas environment.
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
   apiKey: "AIzaSyDtpSlQx8VxnqtI4wOJtAANfQ1grpd4_1o",
@@ -63,72 +114,199 @@ const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__f
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-// const db = getFirestore(app); // Uncomment if you use Firestore
+const db = getFirestore(app);
 
 let currentUserId = null; // To store the user ID once authenticated
-
-// Authenticate and get user ID
-async function authenticateUser() {
-  const userIdDisplay = document.getElementById('userIdDisplay');
-  try {
-    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-      // Sign in with the provided custom token
-      await signInWithCustomToken(auth, __initial_auth_token);
-    } else {
-      // Sign in anonymously if no custom token is provided
-      await signInAnonymously(auth);
-    }
-  } catch (error) {
-    console.error("Firebase authentication error:", error);
-    // Display error message to user, e.g., using displayMessageBox
-    displayMessageBox('Authentication Error', 'Failed to sign in: ' + error.message);
-    // Fallback to a random UUID if authentication fails for some reason
-    currentUserId = crypto.randomUUID();
-    userIdDisplay.textContent = `User ID: ${currentUserId} (Guest - Auth Failed)`;
-  }
-}
-
-// Listen for authentication state changes to get the user ID
-onAuthStateChanged(auth, (user) => {
-  const userIdDisplay = document.getElementById('userIdDisplay');
-  if (user) {
-    // User is signed in
-    currentUserId = user.uid;
-    userIdDisplay.textContent = `User ID: ${currentUserId}`;
-    console.log("Authenticated User ID:", currentUserId);
-    // Now that authentication is ready, you can proceed with Firestore operations if needed
-  } else {
-    // User is signed out or not yet authenticated
-    // If we're still loading, or signInAnonymously failed, generate a temporary ID
-    if (!currentUserId) { // Only generate if not already set by error
-        currentUserId = crypto.randomUUID();
-        userIdDisplay.textContent = `User ID: ${currentUserId} (Guest)`;
-    }
-    console.log("No user signed in. Using generated guest ID:", currentUserId);
-  }
-});
-
-// Call authentication function when the script loads
-authenticateUser();
+let isAuthReady = false; // Flag to indicate if auth state has been determined
+const scheduleDocId = 'user_schedule'; // A fixed ID for the user's single schedule document
 
 /* ============ DOM refs ============ */
 const fileInp  = document.getElementById('xmlFile');
 const btnUp    = document.getElementById('btnUpload');
 const btnClear = document.getElementById('btnClear');
 const target   = document.getElementById('schedule');
+const userIdDisplay = document.getElementById('userIdDisplay');
+const loadingIndicator = document.getElementById('loadingIndicator');
 
+// Event Listeners
 btnUp.onclick       = () => fileInp.click();
 fileInp.onchange    = handleFile;
-btnClear.onclick    = () => { target.innerHTML=''; fileInp.value=''; btnClear.disabled=true; };
+btnClear.onclick    = () => clearSchedule();
+
+// --- Firebase Authentication and Data Loading ---
+
+// Authenticate and get user ID
+async function authenticateUser() {
+  console.log("Authenticating user...");
+  loadingIndicator.style.display = 'flex'; // Show loading indicator
+  try {
+    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+      console.log("Signing in with custom token...");
+      await signInWithCustomToken(auth, __initial_auth_token);
+    } else {
+      console.log("Signing in anonymously...");
+      await signInAnonymously(auth);
+    }
+  } catch (error) {
+    console.error("Firebase authentication error during signIn:", error);
+    displayMessageBox('Authentication Error', 'Failed to sign in: ' + error.message + '. Using guest ID.');
+    // Fallback to a random UUID if authentication fails for some reason
+    currentUserId = crypto.randomUUID();
+    userIdDisplay.textContent = `User ID: ${currentUserId} (Guest - Auth Failed)`;
+    isAuthReady = true; // Auth process attempted, set flag
+    loadSchedule(); // Attempt to load with guest ID if auth failed
+  } finally {
+    // loadingIndicator.style.display = 'none'; // Only hide after loadSchedule completes
+  }
+}
+
+// Listen for authentication state changes to get the user ID
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    // User is signed in
+    currentUserId = user.uid;
+    userIdDisplay.textContent = `User ID: ${currentUserId}`;
+    console.log("Authenticated User ID set:", currentUserId);
+  } else {
+    // User is signed out or not yet authenticated, if currentUserId isn't set by signInAnonymously call yet
+    if (!currentUserId) { // Only generate if not already set by error during signIn, or if completely new session
+        currentUserId = crypto.randomUUID();
+        userIdDisplay.textContent = `User ID: ${currentUserId} (Guest)`;
+        console.log("No user signed in. Generated guest ID:", currentUserId);
+    } else {
+        console.log("Existing guest ID retained:", currentUserId);
+    }
+  }
+  isAuthReady = true; // Auth state has been determined
+  console.log("Authentication state ready. Loading schedule...");
+  loadSchedule(); // Load schedule once authenticated or guest ID is determined
+});
+
+// Function to save the schedule data to Firestore
+async function saveSchedule(scheduleData) {
+  if (!isAuthReady) {
+    console.warn("Attempted to save schedule before authentication was ready.");
+    displayMessageBox('Warning', 'Authentication not ready. Please wait and try again.');
+    return;
+  }
+  if (!currentUserId) {
+    console.error("No currentUserId available for saving schedule.");
+    displayMessageBox('Error', 'User ID not available. Cannot save schedule.');
+    return;
+  }
+
+  console.log("Saving schedule for user:", currentUserId);
+  loadingIndicator.style.display = 'flex'; // Show loading indicator
+  try {
+    // Firestore does not directly support deeply nested arrays, so stringify the grid
+    const dataToSave = {
+      dayNames: scheduleData.dayNames,
+      rows: scheduleData.rows,
+      grid: JSON.stringify(scheduleData.grid) // Stringify the nested array
+    };
+    console.log("Data to save:", dataToSave);
+
+    // Construct the document path: /artifacts/{appId}/users/{userId}/schedules/{scheduleDocId}
+    const userScheduleRef = doc(db, 'artifacts', appId, 'users', currentUserId, 'schedules', scheduleDocId);
+    await setDoc(userScheduleRef, dataToSave);
+    displayMessageBox('Success', 'Schedule saved successfully!');
+    console.log("Schedule saved to Firestore for user:", currentUserId);
+  } catch (error) {
+    console.error("Error saving schedule to Firestore:", error);
+    displayMessageBox('Error', 'Failed to save schedule: ' + error.message);
+  } finally {
+    loadingIndicator.style.display = 'none'; // Hide loading indicator
+  }
+}
+
+// Function to load the schedule data from Firestore
+async function loadSchedule() {
+  if (!isAuthReady) {
+    console.warn("Attempted to load schedule before authentication was ready.");
+    // This case should ideally be handled by onAuthStateChanged calling loadSchedule
+    return;
+  }
+  if (!currentUserId) {
+    console.warn("No currentUserId available for loading schedule.");
+    loadingIndicator.style.display = 'none'; // Hide if no user ID
+    return;
+  }
+
+  console.log("Loading schedule for user:", currentUserId);
+  loadingIndicator.style.display = 'flex'; // Show loading indicator
+  try {
+    const userScheduleRef = doc(db, 'artifacts', appId, 'users', currentUserId, 'schedules', scheduleDocId);
+    const docSnap = await getDoc(userScheduleRef);
+
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      console.log("Schedule data loaded:", data);
+      // Parse the grid string back into a nested array
+      const loadedSchedule = {
+        dayNames: data.dayNames,
+        rows: data.rows,
+        grid: JSON.parse(data.grid) // Parse the string back
+      };
+      renderTable(loadedSchedule);
+      btnClear.disabled = false;
+      displayMessageBox('Loaded', 'Schedule loaded successfully!');
+      console.log("Schedule loaded from Firestore for user:", currentUserId);
+    } else {
+      console.log("No existing schedule found for user:", currentUserId);
+      btnClear.disabled = true; // No schedule to clear
+      target.innerHTML = '<p>Upload an XML file to create your schedule.</p>';
+    }
+  } catch (error) {
+    console.error("Error loading schedule from Firestore:", error);
+    displayMessageBox('Error', 'Failed to load schedule: ' + error.message);
+  } finally {
+    loadingIndicator.style.display = 'none'; // Hide loading indicator
+  }
+}
+
+// Function to clear the schedule from the page and Firestore
+async function clearSchedule() {
+  if (!isAuthReady || !currentUserId) {
+    displayMessageBox('Error', 'Authentication not ready or user ID not available. Cannot clear schedule from database.');
+    return;
+  }
+  console.log("Clearing schedule for user:", currentUserId);
+  loadingIndicator.style.display = 'flex'; // Show loading indicator
+  try {
+    const userScheduleRef = doc(db, 'artifacts', appId, 'users', currentUserId, 'schedules', scheduleDocId);
+    await deleteDoc(userScheduleRef);
+    target.innerHTML='';
+    fileInp.value='';
+    btnClear.disabled=true;
+    displayMessageBox('Cleared', 'Schedule cleared and removed from database.');
+    console.log("Schedule cleared from Firestore for user:", currentUserId);
+  } catch (error) {
+    console.error("Error clearing schedule from Firestore:", error);
+    displayMessageBox('Error', 'Failed to clear schedule: ' + error.message);
+  } finally {
+    loadingIndicator.style.display = 'none'; // Hide loading indicator
+  }
+}
+
+// Call authentication function when the script loads
+authenticateUser();
+
 
 /* ============ file → table ============ */
 function handleFile(){
   const f = fileInp.files?.[0]; if(!f) return;
   const rdr = new FileReader();
-  rdr.onload = e=>{
-    try{ renderTable( extract(new DOMParser().parseFromString(e.target.result,'text/xml')) ); btnClear.disabled=false; }
-    // Using a custom message box instead of alert()
-    catch(err){ displayMessageBox('Error', 'Unable to parse timetable: ' + err.message); }
+  rdr.onload = async e=>{ // Made async to await saveSchedule
+    try{
+      const scheduleData = extract(new DOMParser().parseFromString(e.target.result,'text/xml'));
+      renderTable(scheduleData);
+      btnClear.disabled=false;
+      await saveSchedule(scheduleData); // Save after rendering
+    }
+    catch(err){
+      console.error("Error during file handling or parsing:", err);
+      displayMessageBox('Error', 'Unable to parse timetable or save: ' + err.message);
+    }
   };
   rdr.readAsText(f);
 }
@@ -221,25 +399,11 @@ function renderTable({dayNames, rows, grid}){
 // Custom message box function (replaces alert())
 function displayMessageBox(title, message) {
   const messageBox = document.createElement('div');
-  messageBox.style.cssText = `
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: white;
-    padding: 20px;
-    border: 1px solid #ccc;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-    z-index: 1000;
-    border-radius: 8px;
-    max-width: 90%;
-    text-align: center;
-    font-family: Arial, Helvetica, sans-serif;
-  `;
+  messageBox.classList.add('message-box');
   messageBox.innerHTML = `
     <h3 style="margin-top:0;">${title}</h3>
     <p>${message}</p>
-    <button onclick="this.parentNode.remove()" style="padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">OK</button>
+    <button onclick="this.parentNode.remove()">OK</button>
   `;
   document.body.appendChild(messageBox);
 }
